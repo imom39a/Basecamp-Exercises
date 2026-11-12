@@ -1,123 +1,123 @@
 # Spec: Rescue the TechSupport Corp ticket-processing prompt (day1/03_prompt-rescue)
 
+> **Status: implemented.** Final prompt v4 (principle-based) scored 18/21 (86%) on both runs, against a baseline of 5–6/21. This spec has been updated to match what was built and accepted. The experiment history and the reasons behind each decision are in `docs/reflection.md`.
+
 ## Problem Statement
 
-TechSupport Corp's support-ticket processor is one Claude Haiku prompt that does three jobs in a single call: it assigns a priority (P1–P4), extracts entities (product, version, error codes, affected users), and drafts a reply to the customer, all returned as JSON. It works on clean tickets but passes only about 4 of 21 eval cases (19%) on real-world input. Messy tickets get the wrong priority, made-up entities, broken JSON, and replies that contradict the priority or skip some of the issues. Their renewal review is imminent. They can't upgrade the model, and their pipeline has a 5-second latency budget per ticket, so more than 3 sequential calls needs a justification.
+TechSupport Corp's support-ticket processor is one Claude Haiku prompt that does three jobs in a single call: it assigns a priority (P1–P4), extracts entities (product, version, error codes, affected users), and drafts a reply to the customer, all returned as JSON. It works on clean tickets but fails on real-world input. At baseline it passed 5 of 21 eval cases (24%). Messy tickets get the wrong priority, made-up entities and broken JSON. Their renewal review is imminent. They can't upgrade the model, and their pipeline has a 5-second latency budget per ticket, so more than 3 sequential calls needs a justification.
 
-As the participant, I need to show more than a higher score: I need a *diagnosed, defensible* fix. That means a root cause I can name, techniques I chose for stated reasons, a quantitative before/after, and a debrief I can give a technical buyer.
+As the participant, I need to show more than a higher score: I need a *diagnosed, defensible* fix. That means a root cause I can name, techniques I chose for stated reasons, a quantitative before/after, and a debrief I can give a technical buyer. The score must also come from general guidance, not from rules fitted to the test cases.
 
 ## Solution
 
-Replace the single broken prompt with a prompt design built from a written diagnosis. It keeps the same function: a raw ticket goes in and the same JSON shape comes out. The work happens in stages:
+Replace the broken prompt with **one principle-based prompt (v4)**, derived from a per-check diagnosis of the baseline failures. Same contract: a raw ticket goes in, and the same JSON shape comes out from one call.
 
-1. **Diagnose** with meta-prompting and the baseline eval's category breakdown. Name the structural causes:
-   - Task interference: writing the reply pushes the priority up.
-   - The "include all fields" instruction makes the model fill fields it should leave empty.
-   - Priority follows tone, not content.
-   - Business-critical blockers aren't covered by the P1 definition.
-   - There is no rule for tickets with several issues.
-   - There is no JSON-only output rule.
-2. **Fix the single prompt (primary path, per baseline evidence).** Add: entity values must be exact pieces of the ticket text or JSON `null`; priority rules based on content, not tone; feature requests are always P4; any working-functionality defect is at least P3; vague tickets default to P3; P1 only for full outages or a fully blocked critical business process; take the highest severity when there are several issues; exactly one top-level JSON object; a few short examples; reply rules that depend on the priority; JSON-only output.
-3. **Chain the prompt (secondary, A/B-tested)** to remove task interference: classify → extract → write the reply and assemble the JSON. Only adopt it if it beats the best single prompt across runs. Optionally merge the classify and extract steps to save latency.
-4. **Optional (Tier 2):** a final check-and-correct step that repairs JSON or replies that fail a quality check.
-5. **Validate** each version with the harness, compare versions A/B, and keep the iteration log.
-6. **Reflect and debrief:** what I engineered vs. what Claude did, and a 3-minute customer story with a prevention checklist.
+**Diagnosis (baseline, by check):** 13 of 16 failures included an entity error (9 failed on nothing else), 6 had wrong priority (5 of them pushed up), 1 had a JSON structure error, and none failed the response judge. Three structural causes:
+1. "Always include all JSON fields even if empty" makes the model **fill fields**: it paraphrases product labels, adds notes to counts, writes out "Unknown" strings, and invents error codes.
+2. Priority is defined only by user count: **no rule against judging by tone, none for unconfirmed scope, none for defect vs request.**
+3. **No rule for the output's shape**: a multi-issue ticket produced one object per issue.
 
-Targets: ≥75% to pass, ≥90% plus iteration log plus a monitoring prompt design for Tier 1, and a self-healing chain for Tier 2.
+**Fix: five principles (v4):**
+1. **Impact over tone.** Decide from the effect the ticket describes. Urgency words, capitals, threats and the customer's own label are not evidence.
+2. **Confirmed, not assumed.** Raise priority only for impact and scope the ticket states. When it's unclear, choose the lower level and ask.
+3. **Defect vs request.** Wrong, missing or hidden behaviour is a defect (P3 or higher). New capability is a request (P4), however urgently it's phrased.
+4. **Evidence-only fields.** Copy entities exactly as written; otherwise use the JSON literal `null`.
+5. **Reply matches the decision.** Never promise more than the priority supports. Ask questions when information is missing.
+
+Plus: exactly one JSON object with no code fences, and three short examples (an angry feature request, a vague ticket, a multi-issue ticket).
+
+**Validated** with an A/B suite that uses the notebook's own harness, with repeat runs. **Process audit:** Claude's plain rewrite, made with no diagnosis, scores 57–62%, which shows how much of the gain the diagnosis added.
+
+**Targets:** ≥75% to pass (**met: 86%**). Tier 1 is ≥90% plus an iteration log plus a monitoring prompt: the iteration log is done; the 90% was only reached by v3a, which was rejected as fitted to the test; the monitoring prompt is not written. Tier 2, a self-repairing chain, was not attempted.
 
 ## User Stories
 
 1. As a participant, I want to run the setup cell and see a verified connection, so that I know eval runs will reach Claude.
-2. As a participant, I want a baseline eval of the broken prompt, so that I have a fixed reference score to measure against.
-3. As a participant, I want the baseline broken down by category (clean, multi-issue, vague, non-native, feature request, complex), so that I can see where fixes will help most.
-4. As a participant, I want to see the per-check reason for every failed case (JSON, priority, entities, response), so that I can trace each symptom to a cause.
-5. As a participant, I want to meta-prompt Claude with the broken prompt and failing examples, so that I get candidate causes to evaluate.
-6. As a participant, I want to write my own diagnosis before fixing anything, so that my fixes follow from a diagnosis rather than trial and error.
+2. As a participant, I want to confirm the evals run on Haiku even though the banner names the default model, so that I trust the "no model upgrade" constraint holds.
+3. As a participant, I want a baseline eval of the broken prompt, so that I have a fixed reference score to measure against.
+4. As a participant, I want the baseline broken down by category, so that I can see the categories at zero (multi-issue, vague).
+5. As a participant, I want pass counts for each check (JSON, priority, entities, response), so that I can see which failure mode dominates.
+6. As a participant, I want to read the model's raw output on failing cases, so that I fix the actual behaviour instead of guessing.
 7. As a participant, I want to know exactly how each check scores a case, so that my fixes target real pass/fail criteria.
-8. As a participant, I want the prompt to output null or empty for any entity the ticket doesn't state, so that vague tickets never produce invented products or error codes.
-9. As a participant, I want extracted entity values copied as they appear in the ticket, so that they pass the "must appear in the input" check.
-10. As a participant, I want priority to depend on business impact, not on the customer's tone, so that angry feature requests aren't promoted.
-11. As a participant, I want an explicit rule that feature requests are P4 even when labelled "bug" or "critical", so that the dark-mode case is classified correctly.
-12. As a participant, I want P1 reserved for full outages and fully blocked critical business processes (e.g. payroll), with partial or intermittent production problems kept at P2, so that urgent-sounding tickets aren't over-classified while high-impact tickets with few users still reach P1.
-13. As a participant, I want a rule for tickets with several issues (take the highest severity, cover every issue), so that combined tickets are neither under-classified nor partly ignored.
-14. As a participant, I want vague tickets to default to P3 with low confidence and a reply that asks clarifying questions, so that the model doesn't guess while sounding confident.
-14a. As a participant, I want any defect in working functionality rated at least P3, so that minor bugs aren't pushed down to P4.
-14b. As a participant, I want `affected_users` to be a bare number that appears in the ticket, or `null`, so that values with notes ("200+ (export)", "3 out of 6") don't fail the entity check.
-14c. As a participant, I want missing values written as JSON `null`, never as "Unknown - …" strings, so that they pass as empty.
-14d. As a participant, I want `error_codes` to list only code-like tokens that appear literally in the ticket, so that described symptoms aren't turned into made-up codes.
-14e. As a participant, I want exactly one top-level JSON object even for tickets with several issues, so that the structure check doesn't fail on arrays or per-issue objects.
-15. As a participant, I want the confidence field to reflect how complete the information is, so that downstream users can tell which classifications are uncertain.
-16. As a participant, I want the output to be raw JSON only, with no prose and no code fences, so that it always parses.
-17. As a participant, I want quotes inside the reply text escaped, so that customer quotes (e.g. "timeout exceeded") don't break the JSON.
-18. As a participant, I want every required field always present, so that the structure check never fails.
-19. As a participant, I want a few short examples covering the hard categories, so that Haiku can see the expected behaviour rather than infer it.
-20. As a participant, I want replies to P4 feature requests to acknowledge the request without promising a "fix", so that customer expectations are set correctly.
-21. As a participant, I want replies that are consistent with the assigned priority, so that the response judge doesn't flag contradictions.
-22. As a participant, I want replies that stay professional whatever the ticket's tone, so that they read well with hostile customers.
-23. As a participant, I want replies to non-native English tickets that address the actual technical content, so that language quality doesn't reduce accuracy.
-24. As a participant, I want to A/B-compare my revised single prompt with the baseline, so that I can show the change quantitatively, by category.
-25. As a participant, I want to split the work into a classify step, an extract step, and a reply-and-assemble step, so that writing the reply can't affect the classification.
-26. As a participant, I want each later chain step to see the original ticket and all earlier outputs, so that the final step can assemble the full JSON.
-27. As a participant, I want the last chain step to produce the final, complete JSON, so that the harness scores the chain like a single prompt.
-28. As a participant, I want to keep the chain at 3 calls or fewer, or justify any extra, so that the design fits the 5-second latency budget.
-29. As a participant, I want to consider merging classification and extraction into one call, so that I can trade a small accuracy risk for lower latency.
-30. As a participant, I want clean tickets to keep passing after every change, so that fixes for hard cases don't break easy ones.
-31. As a participant, I want a clear label on every eval run, so that the iteration log documents my process.
-32. As a participant, I want to view the iteration log and score chart, so that I can present how the score progressed.
-33. As a Tier 1 participant, I want to reach ≥90%, so that I meet the Optimizer bar.
-34. As a Tier 1 participant, I want a monitoring prompt that checks production outputs (priority sanity, made-up entities, reply consistency), so that the customer can catch regressions after launch.
-35. As a Tier 2 participant, I want a final check-and-correct step that validates the JSON, priority and reply and fixes them if they fail, so that the pipeline repairs itself.
-36. As a participant, I want to run the "Claude direct fix" process audit, so that I can compare my methodical result with a rewrite done without a method.
-37. As a participant, I want to answer the four reflection questions, so that I can separate my engineering decisions from Claude's built-in capability.
-38. As a participant, I want a 3-minute debrief (problem → diagnosis → fix → by-category proof → prevention checklist), so that I can present the work to an enterprise buyer.
-39. As a TechSupport Corp stakeholder, I want the same ticket-in, JSON-out contract kept, so that my pipeline needs no changes.
-40. As a TechSupport Corp stakeholder, I want the fix to stay on Haiku, so that cost and latency don't change.
-41. As a TechSupport Corp stakeholder, I want a prevention checklist, so that my team avoids these failure modes in future prompts.
-42. As a facilitator, I want participants' scores backed by a written explanation, so that I can grade method as well as score.
+8. As a participant, I want to write my own diagnosis before fixing anything, so that every fix follows from evidence.
+9. As a participant, I want entity values copied exactly from the ticket or set to `null`, so that the processor never invents products, versions or codes.
+10. As a participant, I want missing values written as JSON `null`, never as "Unknown" strings, so that downstream code can tell what's missing.
+11. As a participant, I want `affected_users` to be a number copied from the ticket, or `null`, so that counts aren't annotated or estimated.
+12. As a participant, I want `error_codes` to contain only codes or messages that appear literally in the ticket, so that symptoms aren't turned into fake codes.
+13. As a participant, I want priority decided from the described impact, not the customer's tone, so that angry or urgent wording doesn't push it up.
+14. As a participant, I want priority raised only for impact and scope the ticket confirms, so that vague or unconfirmed tickets default lower and get clarifying questions.
+15. As a participant, I want a clear defect-vs-request rule, so that feature requests are P4 and real defects (including hidden or missing information) are at least P3.
+16. As a participant, I want one priority per ticket, taken from the most severe issue, so that multi-issue tickets are neither under-rated nor split.
+17. As a participant, I want exactly one top-level JSON object with no code fences, so that the output always parses.
+18. As a participant, I want the reply to match the priority, cover every issue, and never promise more than the priority supports, so that the response judge passes it and customers aren't misled.
+19. As a participant, I want the confidence field to reflect how complete the information is, so that uncertain classifications are flagged.
+20. As a participant, I want a few short examples written from scratch, so that Haiku sees each principle applied without being trained on the test tickets.
+21. As a participant, I want an A/B suite that scores variants with the notebook's own harness, so that results from the terminal match the notebook.
+22. As a participant, I want repeat runs per variant, with the min–max spread, so that I don't mistake Haiku's run-to-run variation for improvement.
+23. As a participant, I want the judge's one-line reason recorded for failed replies, so that I can tell a prompt problem from a judge problem.
+24. As a participant, I want every run logged with its variant, checks, categories and failing outputs, so that the iteration history can be rebuilt and presented.
+25. As a participant, I want all A/B runs to appear in the notebook's Iteration Log without re-running them, so that the score progression is visible in one place.
+26. As a participant, I want to compare a single prompt against a chain only if the data shows task interference, so that I don't triple latency to fix a failure I can't detect.
+27. As a participant, I want to judge structured outputs on evidence, so that I adopt them where they help (production) and not where they can't move the score (the fixed harness).
+28. As a participant, I want to review my rules for test-case fitting (rules that name specific tickets, rules shaped by the grader), so that the reported score is defensible.
+29. As a participant, I want a principle-based rewrite compared against the case-specific version, so that I can measure how much of the score was test fitting.
+30. As a participant, I want the final prompt to be the most general one that clears the bar, not the highest-scoring one, so that it generalises to production tickets.
+31. As a participant, I want a process audit against Claude's plain rewrite (no diagnosis), so that I can show what my methodology added.
+32. As a participant, I want clean tickets checked for regressions on every run, so that fixes for hard cases don't break easy ones.
+33. As a participant, I want reflection answers in the form "I added X because I diagnosed Y", so that I can explain my engineering separately from Claude's built-in capability.
+34. As a participant, I want a timeline of experiments from baseline to v4, so that I can present the iteration story.
+35. As a participant, I want a 90-second CTO pitch and a prevention checklist, so that I can debrief an enterprise buyer.
+36. As a Tier 1 participant, I want a monitoring prompt that checks production outputs, so that the customer can catch regressions after launch. *(Not yet done.)*
+37. As a Tier 2 participant, I want a final check-and-correct step, so that the pipeline repairs itself. *(Not attempted.)*
+38. As a TechSupport Corp stakeholder, I want the same ticket-in, JSON-out contract and one call per ticket, so that my pipeline and latency budget don't change.
+39. As a TechSupport Corp stakeholder, I want the fix to stay on Haiku, so that cost doesn't change.
+40. As a TechSupport Corp stakeholder, I want structured outputs recommended for production, so that the JSON contract is guaranteed by the API, not only by the prompt.
+41. As a TechSupport Corp stakeholder, I want grader-shaped extraction rules flagged, so that we can decide what production actually needs (for example, per-issue user counts).
+42. As a facilitator, I want scores backed by a diagnosis, an iteration log and an honest note on test fitting, so that I can grade method as well as score.
 
 ## Implementation Decisions
 
-- **Only one module changes: the participant-editable prompt definitions in the notebook.** These are the single prompt in the "YOUR TURN" cell, the three step prompts in the chain-mode cell, variant B in the A/B cell, and the audit rewrite. The eval harness is read-only and stays unchanged.
-- **Output contract (fixed):** a JSON object with `priority` (one of the strings `P1`–`P4`), `entities` (an object with `product`, `version`, `error_codes` as a list, and `affected_users`), `response` (string), and `confidence` (`high`/`medium`/`low`). Missing entities are `null`, `""` or `[]`.
-- **Policy for entities: exact text from the ticket, or `null`.** The harness only checks that each non-empty value appears in the ticket; it never checks that every entity was found. Null is therefore always safe and inferring is risky. Rules:
-  - `product`: the product name exactly as written. When the ticket doesn't name a product, use `null`; never a descriptive label ("CRM Platform", "Data Sync Service").
-  - `version`: a version string that appears exactly in the ticket, or `null`.
-  - `error_codes`: only code-like tokens copied literally from the ticket; `[]` when there are none.
-  - `affected_users`: one bare number copied from the ticket, or `null`. No notes, ranges, "N out of M" or descriptions. When there are several counts, use the largest.
-  - Missing means JSON `null`, never strings like "Unknown - not specified".
-- **Priority policy, written explicitly in the prompt:**
-  - P1: full outage (all or nearly all users unable to use the product), or a critical business process completely blocked (e.g. payroll cannot run). Partial, intermittent or degraded problems are not P1, even in production.
-  - P2: a major feature broken or seriously degraded for many users, or a production integration partly failing.
-  - P3: a minor bug, limited impact or a workaround exists. **This is the default for vague tickets** that describe no concrete impact, with low confidence.
-  - P4: only feature requests and cosmetic issues, whatever the tone or label. Any defect in working functionality is at least P3.
-  - Several issues: take the highest severity, but still exactly one priority.
-  - Tone, urgency words ("URGENT", "critical", threats to leave) and capitals are explicitly ignored.
+- **Modules changed:**
+  - The notebook's prompt cells: the final v4 prompt cell, the Iteration Log cell, and the process-audit cell.
+  - A new A/B suite: a runner, a file of prompt variants, and a run log.
+
+  The eval harness cell is unchanged and read-only.
+- **Output contract (fixed):** a JSON object with:
+  - `priority` (one of the strings `P1`–`P4`)
+  - `entities` (an object with `product`, `version`, `error_codes` as a list, and `affected_users`)
+  - `response` (string)
+  - `confidence` (`high`, `medium` or `low`)
+
+  Missing entities are JSON `null` (`[]` for error codes).
+- **Architecture: one prompt, one call.** No chain. No case failed the response judge at any stage, so task interference was never measurable, and a 3-step chain would triple latency against the 5-second budget. The chain stays the next experiment if production data shows replies pulling priority.
+- **Priority policy (v4):**
+  - P1: the product is unusable for essentially everyone, or a business-critical process is completely blocked right now.
+  - P2: important functionality broken for many users (scope stated, not guessed), or partly failing in production.
+  - P3: a real defect with limited or unconfirmed impact, including degraded performance of unknown scope; also the default for vague tickets.
+  - P4: a request for new capability, or a purely visual issue that hides or corrupts no information.
+  - Tone is ignored, the most severe issue sets the priority, and when unclear go lower.
+- **Entity policy:** copy exactly or `null`; never infer, paraphrase, label or annotate. `affected_users` is one number copied from the ticket (the largest if there are several). *Known compromise:* the single number and the null-instead-of-label rules follow the grader's substring matching; production may want per-issue counts.
 - **Reply policy:**
-  - Must agree with the priority and cover every issue.
-  - P4 replies acknowledge the request and never promise a fix.
-  - Vague tickets get clarifying questions.
-  - Always professional.
-- **Output hygiene:** exactly one top-level JSON object (never an array or one object per issue), JSON only, no markdown code blocks, escaped quotes in strings, all fields present.
-- **Order of work, based on the baseline.** At baseline (5/21), 13 of 16 failures include an entity error (9 fail on entities alone), 6 include a priority error, 1 is a JSON structure error and none fail the response judge. So the first lever is a disciplined single prompt; task interference is not yet the bottleneck. Expected ceiling: ~14/21 from the entity fixes alone, ~20/21 with priority calibration.
-- **Chain architecture (secondary; adopt only if A/B shows a gain):**
-  - Step 1 (classify): returns priority, confidence and short reasoning, ignoring tone.
-  - Step 2 (extract): returns entities only, with nulls for anything missing.
-  - Step 3 (reply and assemble): writes the reply from the fixed priority and entities, then outputs the final contract JSON.
-  - The harness passes each later step the original ticket plus all earlier step outputs, and scores only the last output.
-- **Latency:** at most 3 sequential calls. Merging classify and extract is an acceptable option. A 4th check-and-correct step (Tier 2) needs a written latency justification.
-- **Self-healing (Tier 2):** the harness runs a fixed list of steps, not a loop. Build "auto-retry" as a final step that checks the earlier output against the contract and policies, then outputs either the same JSON or a corrected version.
-- **Examples:** 3–4 short examples written by the participant, covering an angry feature request, a vague ticket, a ticket with several issues, and a clean P1. Base them on the 5 public failing examples or new tickets the participant writes, never on the hidden eval cases.
-- **Integrity:** the base64 eval cases embedded in the notebook must not be decoded or used for tuning.
+  - Professional, 2–5 sentences, covering every issue.
+  - P4: logged for the product team, with no fix, date, workaround or alternative, and no urgency echoed.
+  - Missing information: ask specific questions.
+  - P1/P2: say it has been escalated and give next steps.
+- **Examples:** three, written from scratch and illustrating the principles. Never taken from the hidden eval cases.
+- **Rejected alternatives:**
+  - **v3a/v3b (95–100%):** rules that name details of specific test cases (quarter-end, tooltips, "other departments", sales offers). Rejected as test fitting. v4's two extra misses (cases 3 and 17) are exactly the cases those rules named.
+  - **Structured outputs in the scored runs:** the harness's API call is fixed, and JSON was already 21/21. Recommended for production instead: `output_config.format` with a JSON schema, enums for `priority` and `confidence`, and string-or-null types for entities.
+- **Integrity:** the base64 eval cases embedded in the notebook were never decoded. Diagnosis used only the harness's own output (failure reasons, model outputs, judge reasons).
 
 ## Testing Decisions
 
-- **One seam: the harness's eval-suite entry point** (`run_eval_suite`, which takes a single prompt or a list of prompts for chain mode, with a label). This seam already exists; no new seams are introduced. A/B comparison (`compare_prompts`) and the iteration log are views over the same seam.
-- **A good test checks external behaviour only:** given a raw ticket, is the final JSON valid, is the priority correct, do all entities appear in the input, and does the judge accept the reply? Prompt wording and the outputs of intermediate chain steps are not asserted.
-- **What is tested:** the single-prompt version, each chain version, the optional check-and-correct chain, and the "Claude direct fix" audit, all through the same seam.
-- **Regression guard:** the clean category must stay fully passing on every run, and any run that drops a category that previously passed is investigated before moving on.
-- **Results per check:** on every run, record pass counts for each check (JSON, priority, entities, response) as well as the total. This breakdown is what showed the entity problem at baseline.
-- **Non-determinism:** Haiku and the judge are stochastic. Treat a ±1 case change as noise, and rerun close comparisons before claiming one version beats another.
-- **Prior art:** the notebook's own baseline run, A/B comparison cell, iteration log and process audit cell. Other day1 exercises (e.g. 04_diagnosing-ai-problems) use the same pattern of driving work from an eval harness.
+- **One seam: the harness's eval entry point.** The notebook calls `run_eval_suite`. The A/B suite runs the notebook's setup cell and harness cell as-is and calls the same `run_eval` and scoring, so terminal and notebook scores are directly comparable. No new seams were introduced. The only addition is a wrapper that records the judge's reason without changing its verdict.
+- **A good test checks external behaviour only:** given a raw ticket, is the JSON valid, is the priority correct, do all entities appear in the ticket, and does the judge accept the reply? Prompt wording is never asserted.
+- **Results per check and per category on every run**, not just the total. This breakdown is what identified entities as the main failure mode.
+- **Repeat runs:** each variant runs at least twice and is reported with its min–max spread. A difference of ±1 case is treated as noise.
+- **Regression guard:** clean and previously passing categories are checked on every run.
+- **Control:** the process audit (Claude's plain rewrite, generated once and saved so every run scores the same text) is the baseline for "what the methodology added".
+- **Known limitation:** no held-out set. The 21 eval cases were used for both tuning and reporting. v4 is the version least fitted to them, but its 86% is still measured on tickets we iterated against.
+- **Prior art:** the notebook's baseline run, its A/B comparison cell, the iteration log and the process audit cell.
 
 ## Out of Scope
 
@@ -125,13 +125,28 @@ Targets: ≥75% to pass, ≥90% plus iteration log plus a monitoring prompt desi
 - Switching to a model other than Haiku.
 - Changing the input or output contract.
 - Decoding or tuning against the embedded eval cases.
-- Production deployment, real latency measurement, or wiring into TechSupport Corp's ticketing system.
-- Translating non-English tickets as a separate preprocessing service.
+- A held-out evaluation set (considered and deliberately skipped).
+- The Tier 2 self-repairing chain.
+- Production deployment, real latency measurement, and wiring structured outputs into TechSupport Corp's pipeline.
 
 ## Further Notes
 
-- **Baseline evidence (5/21, Haiku 4.5):** passes 2, 12, 14, 18, 20. Entity-only failures 1, 4, 5, 8, 10, 15, 16, 17, 19. Priority and entity failures 7, 9, 13, 21. Priority-only failures 3, 11. JSON failure 6. Priority errors: 5 of 6 pushed up (11: P1→P4, 9 and 13: P1→P2, 7 and 21: P2→P3); one pushed down (3: P4→P3). Case 9, a production integration affecting 50 customers, is expected as P2, which disproved the original draft's P1 rule.
+- **Final results:**
 
-- Expected scores: baseline ~19%, a good single prompt 43–57%, a strong chain 76–90%, the reference solution 100%.
-- The deliverable is graded on rationale as much as score: "a score you can explain is a methodology; one you can't is a demo."
-- Never tell the customer "I just asked Claude to fix it". Own the diagnostic judgment.
+  | Version | Score |
+  |---|---|
+  | Baseline | 24–29% |
+  | Claude plain rewrite | 57–62% |
+  | v1 | 76–81% |
+  | v2 | 86–90% |
+  | v3a (rejected) | 95–100% |
+  | **v4 (final)** | **86%** |
+
+- **The remaining v4 misses:**
+  - Case 3: truncated tooltip, rated P4 instead of P3.
+  - Case 17: crash at quarter-end, rated P3 instead of P1.
+  - Case 11: the judge contradicts itself on an urgent feature request (the priority, P4, is correct).
+- **Open items:**
+  - The Tier 1 monitoring prompt.
+  - The reflection's "what surprised you" answer.
+  - One full Run All of the notebook in a kernel, to save outputs.
